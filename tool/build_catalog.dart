@@ -191,15 +191,19 @@ Future<List<String>> _listAllZonePaths(Dio dio) async {
     }
     return paths;
   }));
-  // De-dupe across types. Lowercase the key so it matches the app's
-  // [_normalize] (which lowercases the path before lookup).
-  final set = <String>{};
+  // De-dupe across types, but keep the ORIGINAL case for the URL.
+  // NWS zone IDs are case-sensitive in the path — /zones/county/AKC020
+  // returns 200, /zones/county/akc020 returns 404 — so we can't
+  // lowercase the path itself. We lowercase only the dedup key
+  // (separately from the stored path) so duplicates from multiple
+  // listing types still collapse.
+  final dedup = <String, String>{};
   for (final list in results) {
     for (final p in list) {
-      set.add(p.toLowerCase());
+      dedup.putIfAbsent(p.toLowerCase(), () => p);
     }
   }
-  return set.toList()..sort();
+  return dedup.values.toList()..sort();
 }
 
 Future<Map<String, List<List<List<double>>>>> _fetchAllGeometries(
@@ -256,7 +260,10 @@ Future<Map<String, List<List<List<double>>>>> _fetchAllGeometries(
         final parsed = jsonDecode(body) as Map<String, dynamic>;
         final rings = _parseGeometry(parsed['geometry']);
         if (rings != null && rings.isNotEmpty) {
-          out[path] = _truncateRings(rings);
+          // Fetch with original-case path; store under lowercase key
+          // so the app's `_normalize`-based lookups match. The .bin
+          // file is keyed off lowercase paths.
+          out[path.toLowerCase()] = _truncateRings(rings);
           perTypeOk[typeOf(path)] = (perTypeOk[typeOf(path)] ?? 0) + 1;
         } else {
           perTypeFail[typeOf(path)] = (perTypeFail[typeOf(path)] ?? 0) + 1;
