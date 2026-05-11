@@ -144,13 +144,18 @@ Future<List<String>> _listAllZonePaths(Dio dio) async {
   final results = await Future.wait(_zoneTypes.map((type) async {
     final paths = <String>[];
     try {
-      final res = await dio.get(
+      final res = await dio.get<String>(
         '/zones',
         queryParameters: {'type': type},
-        options: Options(receiveTimeout: const Duration(seconds: 60)),
+        options: Options(
+          receiveTimeout: const Duration(seconds: 60),
+          responseType: ResponseType.plain,
+        ),
       );
+      if (res.data == null) return paths;
+      final parsed = jsonDecode(res.data!) as Map<String, dynamic>;
       final features =
-          (res.data['features'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+          (parsed['features'] as List?)?.cast<Map<String, dynamic>>() ?? [];
       for (final f in features) {
         final props = f['properties'] as Map<String, dynamic>? ?? {};
         final id = props['id'] as String?;
@@ -187,11 +192,24 @@ Future<Map<String, List<List<List<double>>>>> _fetchAllGeometries(
     final end = (i + concurrency).clamp(0, paths.length);
     await Future.wait(paths.sublist(i, end).map((path) async {
       try {
-        final res = await dio.get(
+        // Use plain response type + manual jsonDecode. NWS responds
+        // with `Content-Type: application/geo+json`, which Dio's
+        // default transformer does NOT recognise as JSON, so the
+        // default `ResponseType.json` path leaves `res.data` as a
+        // String and every `res.data['geometry']` access throws —
+        // silently swallowed by this try/catch, producing the
+        // infamous "0 of 11651 geometries fetched" failure.
+        final res = await dio.get<String>(
           path,
-          options: Options(receiveTimeout: const Duration(seconds: 15)),
+          options: Options(
+            receiveTimeout: const Duration(seconds: 15),
+            responseType: ResponseType.plain,
+          ),
         );
-        final rings = _parseGeometry(res.data['geometry']);
+        final body = res.data;
+        if (body == null) return;
+        final parsed = jsonDecode(body) as Map<String, dynamic>;
+        final rings = _parseGeometry(parsed['geometry']);
         if (rings != null && rings.isNotEmpty) {
           out[path] = _truncateRings(rings);
         }
