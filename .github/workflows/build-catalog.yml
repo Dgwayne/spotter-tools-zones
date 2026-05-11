@@ -37,8 +37,8 @@ jobs:
           ZC=$(jq -r .zone_count dist/manifest.json)
           SB=$(jq -r .size_bytes dist/manifest.json)
           echo "zone_count=$ZC size_bytes=$SB"
-          test "$ZC" -gt 12000
-          test "$SB" -gt 6000000
+          test "$ZC" -gt 10000
+          test "$SB" -gt 5000000
           DATE=$(date -u +%Y%m%d)
           echo "tag=catalog-${DATE}-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 

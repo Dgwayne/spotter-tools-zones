@@ -83,12 +83,13 @@ Future<int> main(List<String> args) async {
     final paths = await _listAllZonePaths(dio);
     stdout.writeln('[build] ${paths.length} unique zone paths discovered');
 
-    if (paths.length < 12000) {
-      // Sanity floor — NWS routinely returns 14K+. If we see less, the
-      // list endpoint is likely degraded; better to abort than publish
-      // a partial catalog.
+    if (paths.length < 10000) {
+      // Sanity floor — full catalog hovers around 11–12K depending on
+      // marine/offshore listing state. Anything below 10K means the
+      // list endpoint is degraded; better to abort than publish a
+      // half-empty catalog.
       stderr.writeln(
-          '[build] FATAL: only ${paths.length} zones listed (<12000)');
+          '[build] FATAL: only ${paths.length} zones listed (<10000)');
       return 2;
     }
 
@@ -101,9 +102,9 @@ Future<int> main(List<String> args) async {
     stdout.writeln(
         '[build] ${geometries.length}/${paths.length} zones with geometry');
 
-    if (geometries.length < 12000) {
+    if (geometries.length < 10000) {
       stderr.writeln(
-          '[build] FATAL: only ${geometries.length} geometries fetched (<12000)');
+          '[build] FATAL: only ${geometries.length} geometries fetched (<10000)');
       return 2;
     }
 
