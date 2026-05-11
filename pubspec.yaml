@@ -1,0 +1,11 @@
+name: zone_catalog_builder
+description: NWS zone-geometry catalog builder for Spotter Tools Pro.
+publish_to: 'none'
+
+environment:
+  sdk: ^3.11.5
+
+dependencies:
+  dio: ^5.9.2
+  crypto: ^3.0.5
+  path: ^1.9.1

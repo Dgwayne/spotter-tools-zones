@@ -1,0 +1,54 @@
+name: Build NWS Zone Catalog
+
+on:
+  schedule:
+    # Mondays 06:00 UTC. Cadence chosen because NWS revises zones on a
+    # multi-month basis — weekly is more than fresh enough and stays
+    # nowhere near api.weather.gov request budgets.
+    - cron: '0 6 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: '3.6.0'
+
+      - name: Get dependencies
+        run: dart pub get
+
+      - name: Build catalog
+        run: dart run tool/build_catalog.dart --out dist/
+
+      - name: Sanity check
+        id: check
+        run: |
+          set -euo pipefail
+          test -s dist/zones.bin
+          test -s dist/manifest.json
+          ZC=$(jq -r .zone_count dist/manifest.json)
+          SB=$(jq -r .size_bytes dist/manifest.json)
+          echo "zone_count=$ZC size_bytes=$SB"
+          test "$ZC" -gt 12000
+          test "$SB" -gt 6000000
+          DATE=$(date -u +%Y%m%d)
+          echo "tag=catalog-${DATE}-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.check.outputs.tag }}
+          name: ${{ steps.check.outputs.tag }}
+          files: |
+            dist/zones.bin
+            dist/manifest.json
+          fail_on_unmatched_files: true
+          make_latest: 'true'
