@@ -59,12 +59,11 @@ Future<void> main(List<String> args) async {
 
 Future<int> _run(List<String> args) async {
   final outDir = _parseOutDir(args);
-  // Concurrency 4 is intentionally conservative. NWS's edge (Akamai)
-  // throttles aggressive crawlers from cloud IPs — 8+ from a GitHub
-  // Actions runner reliably triggers 404 noise on a meaningful slice
-  // of requests. 4 is slow but completes cleanly (~10 min for the
-  // full catalog) and CI is patient.
-  final concurrency = _parseInt(args, '--concurrency', 4);
+  // Concurrency 8 is the sweet spot: NWS throttles individual
+  // responses on cloud IPs (some zone responses take 5–10 s), so
+  // small concurrency starves on slow ones. 8 absorbs that variance
+  // and gets us through the catalog in ~20 min on a fresh runner.
+  final concurrency = _parseInt(args, '--concurrency', 8);
   final userAgent = _parseString(
     args,
     '--user-agent',

@@ -14,7 +14,11 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 50 min budget: the catalog fetch typically completes in
+    # ~20 min on a fresh runner but NWS occasionally hangs a slot
+    # for 30 s+, so we keep margin to absorb tail latency rather
+    # than cancelling near the end.
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
 
