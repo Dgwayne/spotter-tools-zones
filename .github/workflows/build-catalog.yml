@@ -20,7 +20,7 @@ jobs:
 
       - uses: dart-lang/setup-dart@v1
         with:
-          sdk: '3.6.0'
+          sdk: 'stable'
 
       - name: Get dependencies
         run: dart pub get
