@@ -53,7 +53,11 @@ const List<String> _zoneTypes = [
   'offshore',
 ];
 
-Future<int> main(List<String> args) async {
+Future<void> main(List<String> args) async {
+  exitCode = await _run(args);
+}
+
+Future<int> _run(List<String> args) async {
   final outDir = _parseOutDir(args);
   final concurrency = _parseInt(args, '--concurrency', 8);
   final userAgent = _parseString(
@@ -187,6 +191,12 @@ Future<Map<String, List<List<List<double>>>>> _fetchAllGeometries(
   final out = <String, List<List<List<double>>>>{};
   var done = 0;
   var lastLog = DateTime.now();
+  // Diagnostic counters. The first per-zone fetch we ever do that
+  // fails sends a sample of the exception + a slice of the response
+  // body to stderr so a failing CI run shows *why* zones aren't
+  // parsing instead of silently producing an empty catalog.
+  final errorSamples = <String>[];
+  final statusSamples = <int>[];
 
   for (var i = 0; i < paths.length; i += concurrency) {
     final end = (i + concurrency).clamp(0, paths.length);
@@ -206,16 +216,27 @@ Future<Map<String, List<List<List<double>>>>> _fetchAllGeometries(
             responseType: ResponseType.plain,
           ),
         );
+        if (statusSamples.length < 5) {
+          statusSamples.add(res.statusCode ?? -1);
+        }
         final body = res.data;
         if (body == null) return;
         final parsed = jsonDecode(body) as Map<String, dynamic>;
         final rings = _parseGeometry(parsed['geometry']);
         if (rings != null && rings.isNotEmpty) {
           out[path] = _truncateRings(rings);
+        } else if (errorSamples.length < 5) {
+          errorSamples.add(
+            'no-geometry: $path bodyHead=${body.substring(0, body.length.clamp(0, 200))}',
+          );
         }
-      } catch (_) {
-        // Per-zone failures are non-fatal — keep going. We assert
-        // a minimum total later.
+      } catch (e) {
+        if (errorSamples.length < 5) {
+          final dioMsg = e is DioException
+              ? 'DioException type=${e.type} status=${e.response?.statusCode} msg=${e.message} bodyHead=${(e.response?.data ?? '').toString().substring(0, ((e.response?.data ?? '').toString().length).clamp(0, 200))}'
+              : 'other: $e';
+          errorSamples.add('throw on $path: $dioMsg');
+        }
       }
       done++;
     }));
@@ -227,6 +248,12 @@ Future<Map<String, List<List<List<double>>>>> _fetchAllGeometries(
     }
   }
   stdout.writeln('[build]   ${done}/${paths.length} fetched (done)');
+  if (statusSamples.isNotEmpty) {
+    stdout.writeln('[build]   status-code samples: $statusSamples');
+  }
+  for (final s in errorSamples) {
+    stderr.writeln('[build]   error sample: $s');
+  }
   return out;
 }
 
