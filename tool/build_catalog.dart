@@ -28,6 +28,7 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:path/path.dart' as p;
+import 'package:pool/pool.dart';
 
 // ── ZGC3 binary format constants ─────────────────────────────────────
 // Magic bytes spell "ZGC3" in ASCII. Format version 1. Coords are
@@ -213,16 +214,7 @@ Future<Map<String, List<List<List<double>>>>> _fetchAllGeometries(
   final out = <String, List<List<List<double>>>>{};
   var done = 0;
   var lastLog = DateTime.now();
-  // Diagnostic counters. The first per-zone fetch we ever do that
-  // fails sends a sample of the exception + a slice of the response
-  // body to stderr so a failing CI run shows *why* zones aren't
-  // parsing instead of silently producing an empty catalog.
   final errorSamples = <String>[];
-  final statusSamples = <int>[];
-  // Per-type success/failure rollups. The path segment after `/zones/`
-  // (e.g. "public", "forecast", "coastal") gives us a quick view of
-  // whether a single type is rate-limited / 404'ing while the rest
-  // are healthy.
   final perTypeOk = <String, int>{};
   final perTypeFail = <String, int>{};
   String typeOf(String path) {
@@ -230,27 +222,27 @@ Future<Map<String, List<List<List<double>>>>> _fetchAllGeometries(
     return parts.length > 2 ? parts[2] : path;
   }
 
-  for (var i = 0; i < paths.length; i += concurrency) {
-    final end = (i + concurrency).clamp(0, paths.length);
-    await Future.wait(paths.sublist(i, end).map((path) async {
+  // True worker-pool: every released slot grabs the next available
+  // path instead of waiting for the rest of its "batch" to drain.
+  // This matters because NWS responses have a long tail (most are
+  // sub-second, some take 10+ seconds), and a batched `Future.wait`
+  // pattern leaves 7 slots idle every time the 8th hits a slow
+  // response.
+  final pool = Pool(concurrency);
+
+  await Future.wait(paths.map((path) {
+    return pool.withResource(() async {
       try {
         // Use plain response type + manual jsonDecode. NWS responds
         // with `Content-Type: application/geo+json`, which Dio's
-        // default transformer does NOT recognise as JSON, so the
-        // default `ResponseType.json` path leaves `res.data` as a
-        // String and every `res.data['geometry']` access throws —
-        // silently swallowed by this try/catch, producing the
-        // infamous "0 of 11651 geometries fetched" failure.
+        // default transformer does NOT recognise as JSON.
         final res = await dio.get<String>(
           path,
           options: Options(
-            receiveTimeout: const Duration(seconds: 15),
+            receiveTimeout: const Duration(seconds: 12),
             responseType: ResponseType.plain,
           ),
         );
-        if (statusSamples.length < 5) {
-          statusSamples.add(res.statusCode ?? -1);
-        }
         final body = res.data;
         if (body == null) {
           perTypeFail[typeOf(path)] = (perTypeFail[typeOf(path)] ?? 0) + 1;
@@ -260,8 +252,7 @@ Future<Map<String, List<List<List<double>>>>> _fetchAllGeometries(
         final rings = _parseGeometry(parsed['geometry']);
         if (rings != null && rings.isNotEmpty) {
           // Fetch with original-case path; store under lowercase key
-          // so the app's `_normalize`-based lookups match. The .bin
-          // file is keyed off lowercase paths.
+          // so the app's `_normalize`-based lookups match.
           out[path.toLowerCase()] = _truncateRings(rings);
           perTypeOk[typeOf(path)] = (perTypeOk[typeOf(path)] ?? 0) + 1;
         } else {
@@ -282,18 +273,17 @@ Future<Map<String, List<List<List<double>>>>> _fetchAllGeometries(
         }
       }
       done++;
-    }));
+      final now = DateTime.now();
+      if (now.difference(lastLog).inSeconds >= 10) {
+        lastLog = now;
+        stdout.writeln('[build]   ${done}/${paths.length} fetched');
+      }
+    });
+  }));
 
-    final now = DateTime.now();
-    if (now.difference(lastLog).inSeconds >= 10) {
-      lastLog = now;
-      stdout.writeln('[build]   ${done}/${paths.length} fetched');
-    }
-  }
+  await pool.close();
+
   stdout.writeln('[build]   ${done}/${paths.length} fetched (done)');
-  if (statusSamples.isNotEmpty) {
-    stdout.writeln('[build]   status-code samples: $statusSamples');
-  }
   stdout.writeln('[build]   per-type ok: $perTypeOk');
   stdout.writeln('[build]   per-type fail: $perTypeFail');
   for (final s in errorSamples) {

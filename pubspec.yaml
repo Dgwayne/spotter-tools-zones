@@ -9,3 +9,4 @@ dependencies:
   dio: ^5.9.2
   crypto: ^3.0.5
   path: ^1.9.1
+  pool: ^1.5.1
