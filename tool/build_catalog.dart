@@ -59,7 +59,12 @@ Future<void> main(List<String> args) async {
 
 Future<int> _run(List<String> args) async {
   final outDir = _parseOutDir(args);
-  final concurrency = _parseInt(args, '--concurrency', 8);
+  // Concurrency 4 is intentionally conservative. NWS's edge (Akamai)
+  // throttles aggressive crawlers from cloud IPs — 8+ from a GitHub
+  // Actions runner reliably triggers 404 noise on a meaningful slice
+  // of requests. 4 is slow but completes cleanly (~10 min for the
+  // full catalog) and CI is patient.
+  final concurrency = _parseInt(args, '--concurrency', 4);
   final userAgent = _parseString(
     args,
     '--user-agent',
@@ -161,6 +166,20 @@ Future<List<String>> _listAllZonePaths(Dio dio) async {
       final features =
           (parsed['features'] as List?)?.cast<Map<String, dynamic>>() ?? [];
       for (final f in features) {
+        // Prefer the feature's own `id` field (full URL), which is
+        // the *canonical* path NWS expects. Falling back to
+        // `properties.type` + `properties.id` was the bug: NWS lists
+        // a marine zone with `properties.type = "coastal"` but the
+        // actual zone URL is `/zones/forecast/{id}`, producing
+        // 404-cascade for every coastal & offshore zone we tried.
+        final featureUrl = f['id'] as String?;
+        if (featureUrl != null && featureUrl.contains('/zones/')) {
+          final idx = featureUrl.indexOf('/zones/');
+          paths.add(featureUrl.substring(idx));
+          continue;
+        }
+        // Last-resort fallback if the feature is malformed (we still
+        // include the candidate so de-dupe + later fetch tries it).
         final props = f['properties'] as Map<String, dynamic>? ?? {};
         final id = props['id'] as String?;
         if (id == null) continue;
@@ -197,6 +216,16 @@ Future<Map<String, List<List<List<double>>>>> _fetchAllGeometries(
   // parsing instead of silently producing an empty catalog.
   final errorSamples = <String>[];
   final statusSamples = <int>[];
+  // Per-type success/failure rollups. The path segment after `/zones/`
+  // (e.g. "public", "forecast", "coastal") gives us a quick view of
+  // whether a single type is rate-limited / 404'ing while the rest
+  // are healthy.
+  final perTypeOk = <String, int>{};
+  final perTypeFail = <String, int>{};
+  String typeOf(String path) {
+    final parts = path.split('/');
+    return parts.length > 2 ? parts[2] : path;
+  }
 
   for (var i = 0; i < paths.length; i += concurrency) {
     final end = (i + concurrency).clamp(0, paths.length);
@@ -220,20 +249,28 @@ Future<Map<String, List<List<List<double>>>>> _fetchAllGeometries(
           statusSamples.add(res.statusCode ?? -1);
         }
         final body = res.data;
-        if (body == null) return;
+        if (body == null) {
+          perTypeFail[typeOf(path)] = (perTypeFail[typeOf(path)] ?? 0) + 1;
+          return;
+        }
         final parsed = jsonDecode(body) as Map<String, dynamic>;
         final rings = _parseGeometry(parsed['geometry']);
         if (rings != null && rings.isNotEmpty) {
           out[path] = _truncateRings(rings);
-        } else if (errorSamples.length < 5) {
-          errorSamples.add(
-            'no-geometry: $path bodyHead=${body.substring(0, body.length.clamp(0, 200))}',
-          );
+          perTypeOk[typeOf(path)] = (perTypeOk[typeOf(path)] ?? 0) + 1;
+        } else {
+          perTypeFail[typeOf(path)] = (perTypeFail[typeOf(path)] ?? 0) + 1;
+          if (errorSamples.length < 5) {
+            errorSamples.add(
+              'no-geometry: $path bodyHead=${body.substring(0, body.length.clamp(0, 200))}',
+            );
+          }
         }
       } catch (e) {
+        perTypeFail[typeOf(path)] = (perTypeFail[typeOf(path)] ?? 0) + 1;
         if (errorSamples.length < 5) {
           final dioMsg = e is DioException
-              ? 'DioException type=${e.type} status=${e.response?.statusCode} msg=${e.message} bodyHead=${(e.response?.data ?? '').toString().substring(0, ((e.response?.data ?? '').toString().length).clamp(0, 200))}'
+              ? 'DioException type=${e.type} status=${e.response?.statusCode} msg=${e.message}'
               : 'other: $e';
           errorSamples.add('throw on $path: $dioMsg');
         }
@@ -251,6 +288,8 @@ Future<Map<String, List<List<List<double>>>>> _fetchAllGeometries(
   if (statusSamples.isNotEmpty) {
     stdout.writeln('[build]   status-code samples: $statusSamples');
   }
+  stdout.writeln('[build]   per-type ok: $perTypeOk');
+  stdout.writeln('[build]   per-type fail: $perTypeFail');
   for (final s in errorSamples) {
     stderr.writeln('[build]   error sample: $s');
   }
