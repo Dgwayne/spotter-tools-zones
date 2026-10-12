@@ -2,11 +2,17 @@ name: Build NWS Zone Catalog
 
 on:
   schedule:
-    # Mondays 06:00 UTC. Cadence chosen because NWS revises zones on a
-    # multi-month basis — weekly is more than fresh enough and stays
-    # nowhere near api.weather.gov request budgets.
+    # Mondays 06:00 UTC. The build reads NWS's official zone shapefiles
+    # (five zip downloads, under a minute) and only publishes a release
+    # when the geometry actually changed, which NWS does a few times a
+    # year. Unchanged weeks publish nothing, so phones download nothing.
     - cron: '0 6 * * 1'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      allow_large_diff:
+        description: 'Publish even if many zones changed (only after confirming NWS really redrew them)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -14,11 +20,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # 50 min budget: the catalog fetch typically completes in
-    # ~20 min on a fresh runner but NWS occasionally hangs a slot
-    # for 30 s+, so we keep margin to absorb tail latency rather
-    # than cancelling near the end.
-    timeout-minutes: 50
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -29,11 +31,26 @@ jobs:
       - name: Get dependencies
         run: dart pub get
 
+      # The currently published release is the baseline for the
+      # unchanged check and the diff safety gate. If it can't be
+      # fetched, fail rather than publish without the gate.
+      - name: Fetch published catalog
+        run: |
+          set -euo pipefail
+          mkdir -p prev
+          base=https://github.com/${{ github.repository }}/releases/latest/download
+          curl -fsSL --retry 4 --retry-delay 15 -o prev/manifest.json "$base/manifest.json"
+          curl -fsSL --retry 4 --retry-delay 15 -o prev/zones.bin "$base/zones.bin"
+
       - name: Build catalog
-        run: dart run tool/build_catalog.dart --out dist/
+        id: build
+        run: >-
+          dart run tool/build_catalog.dart --out dist/ --previous prev/
+          ${{ inputs.allow_large_diff && '--allow-large-diff' || '' }}
 
       - name: Sanity check
         id: check
+        if: steps.build.outputs.changed == 'true'
         run: |
           set -euo pipefail
           test -s dist/zones.bin
@@ -47,6 +64,7 @@ jobs:
           echo "tag=catalog-${DATE}-${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
       - name: Publish Release
+        if: steps.build.outputs.changed == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.check.outputs.tag }}
